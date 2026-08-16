@@ -1,0 +1,29 @@
+{
+  "smtp": {
+    "server": "smtp.qq.com",
+    "port": 465,
+    "sender": "your_email@qq.com",
+    "password": "your_smtp_auth_code",
+    "receiver": "your_email@qq.com"
+  },
+  "deepseek": {
+    "api_key": "sk-your-deepseek-api-key",
+    "api_url": "https://api.deepseek.com/v1/chat/completions",
+    "model": "deepseek-chat",
+    "enable_search": true,
+    "timeout": 120
+  },
+  "rss_feeds": [
+    { "name": "人民网-国内", "url": "http://www.people.com.cn/rss/politics.xml" },
+    { "name": "人民网-国际", "url": "http://www.people.com.cn/rss/world.xml" },
+    { "name": "人民网-社会", "url": "http://www.people.com.cn/rss/society.xml" },
+    { "name": "人民网-财经", "url": "http://www.people.com.cn/rss/finance.xml" },
+    { "name": "人民网-科技", "url": "http://www.people.com.cn/rss/scitech.xml" },
+    { "name": "36氪", "url": "https://36kr.com/feed" }
+  ],
+  "weather": {
+    "lat": 39.9,
+    "lon": 116.4,
+    "location": "北京"
+  }
+}

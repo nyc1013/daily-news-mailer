@@ -1,0 +1,10 @@
+# 敏感配置（含 SMTP 授权码 / API Key），使用 config.example.json 为模板创建
+config.json
+
+# 运行日志
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
