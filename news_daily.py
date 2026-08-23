@@ -62,7 +62,7 @@ DEFAULT_CONFIG = {
     "deepseek": {
         "api_key": "",      # 必填：DeepSeek API Key
         "api_url": "https://api.deepseek.com/v1/chat/completions",
-        "model": "deepseek-chat",
+        "model": "deepseek-v4-flash",
         "enable_search": True,
         "timeout": 120,
     },

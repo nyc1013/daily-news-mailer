@@ -124,7 +124,7 @@ schtasks /create /tn "每日新闻" /tr "python D:\path\to\news_daily.py" /sc da
   "deepseek": {                   // AI 生成
     "api_key": "sk-...",
     "api_url": "https://api.deepseek.com/v1/chat/completions",
-    "model": "deepseek-chat",
+    "model": "deepseek-v4-flash",
     "enable_search": true         // 联网搜索，关闭则只用 RSS 源
   },
   "rss_feeds": [                  // RSS 候选源，可任意增删
