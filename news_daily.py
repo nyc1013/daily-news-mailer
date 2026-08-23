@@ -457,7 +457,7 @@ def call_deepseek_api(config: dict, rss_candidates: list[dict], recent_titles: l
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.7,
-        "max_tokens": 8192,
+        "max_tokens": 16384,
         "response_format": {"type": "json_object"},
     }
 
@@ -474,15 +474,21 @@ def call_deepseek_api(config: dict, rss_candidates: list[dict], recent_titles: l
             response.raise_for_status()
             result = response.json()
             content = result["choices"][0]["message"]["content"]
-            logger.info(f"DeepSeek 返回: {len(content)} 字符")
+            finish = result["choices"][0].get("finish_reason", "?")
+            logger.info(f"DeepSeek 返回: {len(content)} 字符 (finish_reason={finish})")
 
             try:
                 return json.loads(content)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                logger.warning("JSON解析失败(" + str(e) + ")，尝试正则修复...")
                 match = re.search(r"\{.*\}", content, re.DOTALL)
                 if match:
-                    return json.loads(match.group())
-                logger.error(f"JSON解析失败: {content[:500]}")
+                    try:
+                        return json.loads(match.group())
+                    except json.JSONDecodeError:
+                        logger.error(f"正则修复失败: {content[:300]}")
+                else:
+                    logger.error(f"JSON解析失败: {content[:300]}")
                 return None
         except requests.exceptions.Timeout:
             logger.error("DeepSeek 超时")
@@ -545,7 +551,7 @@ def fallback_with_rss(config: dict, rss_candidates: list[dict]) -> Optional[dict
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 0.7,
-                "max_tokens": 8192,
+                "max_tokens": 16384,
             },
             timeout=timeout,
         )
