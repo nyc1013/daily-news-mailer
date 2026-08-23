@@ -476,40 +476,49 @@ def call_deepseek_api_search(config: dict, rss_candidates: list[dict], recent_ti
         "stream": False,
     }
 
-    logger.info(f"调用 DeepSeek Responses 联网搜索 ({model})...")
-    try:
-        response = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
-        if response.status_code == 400:
-            logger.warning(f"Responses 400: {response.text[:300]}")
-            return None
-        response.raise_for_status()
-        result = response.json()
-
-        searches = [o for o in result.get("output", []) if o.get("type") == "web_search_call"]
-        logger.info(f"web_search_call: {len(searches)} 次 (全部 completed 率: "
-                    f"{sum(1 for s in searches if s.get('status') == 'completed')}/{len(searches) or 0})")
-
-        # 拼接所有 message 的 output_text
-        content = ""
-        for o in result.get("output", []):
-            if o.get("type") != "message":
+    last_error = ""
+    for attempt in range(2):
+        if attempt:
+            logger.info(f"联网搜索偶发失败（{last_error}），重试第 2 次...")
+        try:
+            logger.info(f"调用 DeepSeek Responses 联网搜索 ({model})...")
+            response = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
+            if response.status_code == 400:
+                logger.warning(f"Responses 400: {response.text[:300]}")
+                last_error = "400"
                 continue
-            for c in o.get("content", []):
-                if c.get("type") in ("output_text", "text"):
-                    content += c.get("text", "")
+            response.raise_for_status()
+            result = response.json()
 
-        if not content.strip():
-            logger.warning(f"Responses 无文本输出: {str(result)[:300]}")
-            return None
+            searches = [o for o in result.get("output", []) if o.get("type") == "web_search_call"]
+            logger.info(f"web_search_call: {len(searches)} 次 (全部 completed 率: "
+                        f"{sum(1 for s in searches if s.get('status') == 'completed')}/{len(searches) or 0})")
 
-        logger.info(f"DeepSeek 返回: {len(content)} 字符")
-        return _parse_news_json(content)
-    except requests.exceptions.Timeout:
-        logger.error("DeepSeek Responses 超时")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"DeepSeek Responses 请求失败: {e}")
-    except (KeyError, IndexError) as e:
-        logger.error(f"DeepSeek Responses 返回格式异常: {e}")
+            # 拼接所有 message 的 output_text
+            content = ""
+            for o in result.get("output", []):
+                if o.get("type") != "message":
+                    continue
+                for c in o.get("content", []):
+                    if c.get("type") in ("output_text", "text"):
+                        content += c.get("text", "")
+
+            if not content.strip():
+                last_error = "无文本输出"
+                logger.warning(f"Responses 无文本输出: {str(result)[:200]}")
+                continue
+
+            logger.info(f"DeepSeek 返回: {len(content)} 字符")
+            return _parse_news_json(content)
+        except requests.exceptions.Timeout:
+            last_error = "超时"
+            logger.error("DeepSeek Responses 超时")
+        except requests.exceptions.RequestException as e:
+            last_error = "请求失败"
+            logger.error(f"DeepSeek Responses 请求失败: {e}")
+        except (KeyError, IndexError) as e:
+            last_error = "格式异常"
+            logger.error(f"DeepSeek Responses 返回格式异常: {e}")
     return None
 
 
@@ -960,13 +969,15 @@ def main():
     if config["deepseek"].get("enable_search", True):
         # 主方案：官方 Responses API 联网搜索（真实当日新闻）
         data = call_deepseek_api_search(config, rss_candidates, recent_titles)
-    if data is None:
-        # 备选：Chat Completions（无搜索）
-        data = call_deepseek_api(config, rss_candidates, recent_titles)
 
     if data is None:
-        logger.warning("主方案失败，尝试降级...")
-        data = fallback_with_rss(config, rss_candidates)
+        # 降级：仅在 RSS 候选含当日条目时使用（否则宁可今天不发，不推送旧闻）
+        today_rss = [c for c in rss_candidates if c.get("is_today")]
+        if today_rss:
+            logger.info(f"联网搜索失败，降级为当日 RSS 播报（{len(today_rss)} 条当日候选）")
+            data = fallback_with_rss(config, today_rss)
+        else:
+            logger.warning("联网搜索失败且无当日 RSS 候选，放弃本次发送（宁缺毋滥，不发旧闻）")
 
     if data is None:
         logger.error("所有方案均失败")
