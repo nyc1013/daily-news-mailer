@@ -64,7 +64,7 @@ DEFAULT_CONFIG = {
         "api_url": "https://api.deepseek.com/v1/chat/completions",
         "model": "deepseek-v4-flash",
         "enable_search": True,
-        "timeout": 120,
+        "timeout": 180,
     },
     "rss_feeds": DEFAULT_RSS_FEEDS,
     "weather": {
@@ -298,7 +298,10 @@ def fetch_rss_news(config: dict) -> list[dict]:
         url = feed_info["url"]
         try:
             logger.info(f"RSS: {name}")
-            feed = feedparser.parse(url)
+            feed = feedparser.parse(
+                url,
+                request_headers={"User-Agent": "Mozilla/5.0 (compatible; DailyNewsBot/1.0)"},
+            )
             if feed.bozo and not feed.entries:
                 logger.warning(f"  {name}: 解析失败,跳过")
                 continue
@@ -431,6 +434,102 @@ def build_news_prompt(rss_candidates: list[dict], recent_titles: list[str] = Non
 # ============================================================
 # DeepSeek API 调用
 # ============================================================
+def _responses_api_url(api_url: str) -> str:
+    """从 Chat Completions 端点推导 Responses 端点（官方联网搜索入口）"""
+    if "/v1/" in api_url:
+        return api_url.rsplit("/v1/", 1)[0] + "/v1/responses"
+    return api_url.rstrip("/") + "/responses"
+
+
+def call_deepseek_api_search(config: dict, rss_candidates: list[dict], recent_titles: list[str] = None) -> Optional[dict]:
+    """
+    调用 DeepSeek Responses API 官方联网搜索（web_search 工具，服务端托管）。
+    注意：官方仅 deepseek-v4-flash 支持搜索；Chat Completions 的 enable_search 参数
+    官方不识别（静默忽略），必须走此端点。失败返回 None，由上层回退普通调用。
+    """
+    api_key = config["deepseek"]["api_key"]
+    api_url = _responses_api_url(config["deepseek"]["api_url"])
+    model = config["deepseek"]["model"]
+    timeout = config["deepseek"].get("timeout", 120)
+
+    today_str = datetime.now().strftime("%Y年%m月%d日")
+    prompt = build_news_prompt(rss_candidates, recent_titles)
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    payload = {
+        "model": model,
+        "input": [
+            {
+                "role": "system",
+                "content": f"今天是{today_str}。你只报道当天发生或首次披露的新闻，绝不用旧闻。"
+                           "必须使用 web_search 搜索结果，严格按JSON格式回复。",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "tools": [{"type": "web_search"}],
+        "temperature": 0.7,
+        "max_output_tokens": 16384,
+        "stream": False,
+    }
+
+    logger.info(f"调用 DeepSeek Responses 联网搜索 ({model})...")
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
+        if response.status_code == 400:
+            logger.warning(f"Responses 400: {response.text[:300]}")
+            return None
+        response.raise_for_status()
+        result = response.json()
+
+        searches = [o for o in result.get("output", []) if o.get("type") == "web_search_call"]
+        logger.info(f"web_search_call: {len(searches)} 次 (全部 completed 率: "
+                    f"{sum(1 for s in searches if s.get('status') == 'completed')}/{len(searches) or 0})")
+
+        # 拼接所有 message 的 output_text
+        content = ""
+        for o in result.get("output", []):
+            if o.get("type") != "message":
+                continue
+            for c in o.get("content", []):
+                if c.get("type") in ("output_text", "text"):
+                    content += c.get("text", "")
+
+        if not content.strip():
+            logger.warning(f"Responses 无文本输出: {str(result)[:300]}")
+            return None
+
+        logger.info(f"DeepSeek 返回: {len(content)} 字符")
+        return _parse_news_json(content)
+    except requests.exceptions.Timeout:
+        logger.error("DeepSeek Responses 超时")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"DeepSeek Responses 请求失败: {e}")
+    except (KeyError, IndexError) as e:
+        logger.error(f"DeepSeek Responses 返回格式异常: {e}")
+    return None
+
+
+def _parse_news_json(content: str) -> Optional[dict]:
+    """解析模型输出的 JSON，成功返回 dict，失败返回 None（不抛异常）"""
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        logger.warning("JSON解析失败(" + str(e) + ")，尝试正则修复...")
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                logger.error(f"正则修复失败: {content[:300]}")
+        else:
+            logger.error(f"JSON解析失败: {content[:300]}")
+        return None
+
+
 def call_deepseek_api(config: dict, rss_candidates: list[dict], recent_titles: list[str] = None) -> Optional[dict]:
     """调用 DeepSeek API（主方案：联网搜索，强制当天新闻）"""
     api_key = config["deepseek"]["api_key"]
@@ -476,20 +575,7 @@ def call_deepseek_api(config: dict, rss_candidates: list[dict], recent_titles: l
             content = result["choices"][0]["message"]["content"]
             finish = result["choices"][0].get("finish_reason", "?")
             logger.info(f"DeepSeek 返回: {len(content)} 字符 (finish_reason={finish})")
-
-            try:
-                return json.loads(content)
-            except json.JSONDecodeError as e:
-                logger.warning("JSON解析失败(" + str(e) + ")，尝试正则修复...")
-                match = re.search(r"\{.*\}", content, re.DOTALL)
-                if match:
-                    try:
-                        return json.loads(match.group())
-                    except json.JSONDecodeError:
-                        logger.error(f"正则修复失败: {content[:300]}")
-                else:
-                    logger.error(f"JSON解析失败: {content[:300]}")
-                return None
+            return _parse_news_json(content)
         except requests.exceptions.Timeout:
             logger.error("DeepSeek 超时")
         except requests.exceptions.RequestException as e:
@@ -870,7 +956,13 @@ def main():
     recent_titles = load_sent_news()
     rss_candidates = fetch_rss_news(config)
 
-    data = call_deepseek_api(config, rss_candidates, recent_titles)
+    data = None
+    if config["deepseek"].get("enable_search", True):
+        # 主方案：官方 Responses API 联网搜索（真实当日新闻）
+        data = call_deepseek_api_search(config, rss_candidates, recent_titles)
+    if data is None:
+        # 备选：Chat Completions（无搜索）
+        data = call_deepseek_api(config, rss_candidates, recent_titles)
 
     if data is None:
         logger.warning("主方案失败，尝试降级...")
