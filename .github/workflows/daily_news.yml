@@ -1,9 +1,8 @@
 name: 每日新闻邮件
 
+# 2026-11-18 起停掉定时发信：新闻已并入「日课」插件（每日 20 条，国内 10 + 国际 10）。
+# 保留手动触发，想单独跑一次邮件时仍可在 Actions 页面点 Run workflow。
 on:
-  schedule:
-    # 每天北京时间 20:00（UTC 12:00）
-    - cron: "0 12 * * *"
   workflow_dispatch:
 
 permissions:
